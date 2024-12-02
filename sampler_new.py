@@ -1,5 +1,7 @@
+import subprocess
 import gi
 import os
+import uuid
 from subprocess import Popen, call
 from signal import SIGTERM
 
@@ -12,26 +14,32 @@ class SoundPlayer:
         self.sound_file = file
         self.sound_process = None
         self.time = time
+        self.FNAME = f"tmp/{uuid.uuid4()}"
+        
+        # Open read end of pipe. Open this in non-blocking mode since otherwise it
+        # may block until another process/threads opens the pipe for writing.
+        os.mkfifo(self.FNAME, mode=0o777)
+
     def play(self):
         if self.time:
             self.time2 = float(self.time)/10
         else:
             self.time2=0
         if self.sound_process is None:
-            self.sound_process = Popen(['mplayer','-ss',str(self.time2), self.sound_file])
+            self.sound_process = subprocess.Popen(['mplayer','-ss',str(self.time2), self.sound_file, '-quiet', '-input', f"file={self.FNAME}"])
 
-    def pause(self):
+    def pause_resume(self):
         if self.sound_process:
-            call(["pkill", "-STOP", "-P", str(self.sound_process.pid)])
-
-    def resume(self):
-        if self.sound_process:
-            call(["pkill", "-CONT", "-P", str(self.sound_process.pid)])
+            # self.sound_process.stdin.write("pause\n".encode())
+            with open(self.FNAME, 'w') as fifo:
+                fifo.write("pause\n")
+            # os.write(self.FNAME, b"pause\n")
 
     def stop(self):
         if self.sound_process:
             os.kill(self.sound_process.pid, SIGTERM)
             self.sound_process = None
+            os.unlink(self.FNAME)
 
 
 class PlayedMusicControl(Gtk.Box):
@@ -67,10 +75,10 @@ class PlayedMusicControl(Gtk.Box):
         self.append(remove_button)
 
     def pause_song(self, _):
-        self.player.pause()
+        self.player.pause_resume()
 
     def resume_song(self, _):
-        self.player.resume()
+        self.player.pause_resume()
 
     def set_volume(self, slider):
         volume = slider.get_value()
