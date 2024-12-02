@@ -4,89 +4,139 @@ from subprocess import Popen, call
 from signal import SIGTERM
 
 gi.require_version("Gtk", "4.0")
-from gi.repository import Gtk
+from gi.repository import Gtk, Gio
 
 
 class SoundPlayer:
-    def __init__(self, file, time=""):
+    def __init__(self, file, time = ''):
         self.sound_file = file
+        self.sound_process = None
         self.time = time
-
     def play(self):
-        self.time2 = 0
-        if override.get_active():
-            self.time2 = start_time.get_value()
-        elif self.time:
-            self.time2 = float(self.time) / 10
+        if self.time:
+            self.time2 = float(self.time)/10
+        else:
+            self.time2=0
+        if self.sound_process is None:
+            self.sound_process = Popen(['mplayer','-ss',str(self.time2), self.sound_file])
 
-        freqs_mplayer = ":".join(str(freq.get_value()) for freq in freqs)
-        self.sound_process = Popen(
-            ["mplayer", "-ss", str(self.time2), "-af", f"equalizer={freqs_mplayer}", self.sound_file]
-        )
+    def pause(self):
+        if self.sound_process:
+            call(["pkill", "-STOP", "-P", str(self.sound_process.pid)])
+
+    def resume(self):
+        if self.sound_process:
+            call(["pkill", "-CONT", "-P", str(self.sound_process.pid)])
 
     def stop(self):
-        os.kill(self.sound_process.pid, SIGTERM)
+        if self.sound_process:
+            os.kill(self.sound_process.pid, SIGTERM)
+            self.sound_process = None
+
+
+class PlayedMusicControl(Gtk.Box):
+    def __init__(self, player, song_name, remove_callback):
+        super().__init__(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        self.player = player
+
+        # Song Name
+        label = Gtk.Label(label=song_name)
+        label.set_hexpand(True)
+        label.set_halign(Gtk.Align.START)
+        self.append(label)
+
+        # Pause Button
+        pause_button = Gtk.Button(label="Pause")
+        pause_button.connect("clicked", self.pause_song)
+        self.append(pause_button)
+
+        # Resume Button
+        resume_button = Gtk.Button(label="Resume")
+        resume_button.connect("clicked", self.resume_song)
+        self.append(resume_button)
+
+        # Volume Slider
+        volume_slider = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, 100, 1)
+        volume_slider.set_value(75)
+        volume_slider.connect("value-changed", self.set_volume)
+        self.append(volume_slider)
+
+        # Remove Button
+        remove_button = Gtk.Button(label="Remove")
+        remove_button.connect("clicked", lambda _: remove_callback(self))
+        self.append(remove_button)
+
+    def pause_song(self, _):
+        self.player.pause()
+
+    def resume_song(self, _):
+        self.player.resume()
+
+    def set_volume(self, slider):
+        volume = slider.get_value()
+        call(["amixer", "set", "Master", f"{int(volume)}%"])
 
 
 class SamplerButton(Gtk.ToggleButton):
-    def __init__(self, file=""):
-        filename = os.path.basename(file)
-        name, ext = os.path.splitext(filename)
-        parts = name.split("#")
-        label = parts[0].capitalize()[:15]
-        time = parts[1] if len(parts) == 2 else ""
-        super().__init__(label=label)
+    def __init__(self, file, played_music_panel):
+        super().__init__(label=os.path.basename(file)[:15])
+        print(file.split('#'))
+        filename_array = file.split('#')
+        label = filename_array[0]
+        if len(filename_array) >= 2:
+            time = filename_array[1]
+            print(time)
+        else:
+            time = ''
+        label = label.capitalize()
+        label = label[0:15]
         self.sound = SoundPlayer(file, time)
+        self.sound_player = SoundPlayer(file, time)
         self.file = file
+        self.played_music_panel = played_music_panel
         self.connect("toggled", self.toggle)
 
     def toggle(self, widget):
         if self.get_active():
-            self.sound.play()
-            current_song_label.set_text(f"Playing: {os.path.basename(self.file)}")
+            self.sound_player.play()
+            self.played_music_panel.add_song(self.sound_player, os.path.basename(self.file))
         else:
-            self.sound.stop()
-            current_song_label.set_text("")
+            self.sound_player.stop()
+
+
+class PlayedMusicPanel(Gtk.ScrolledWindow):
+    def __init__(self):
+        super().__init__(height_request=300)
+        self.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+        self.container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        self.set_child(self.container)
+
+    def add_song(self, player, song_name):
+        control = PlayedMusicControl(player, song_name, self.remove_song)
+        self.container.append(control)
+
+    def remove_song(self, control):
+        control.player.stop()
+        self.container.remove(control)
 
 
 class Sampler(Gtk.ApplicationWindow):
-    def __init__(self, **kargs):
-
-        super().__init__(**kargs, title='Simple sampler')
+    def __init__(self, app):
+        super().__init__(application=app)
+        self.set_title("Simple Sampler")
         self.set_default_size(800, 600)
 
         main_panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
         self.set_child(main_panel)
 
-        # Equalizer
-        equalizer_box = Gtk.Box(spacing=10, height_request= 100)
-        init_eq_button = Gtk.Button(label="Init EQ")
-        init_eq_button.connect("clicked", self.equalizer_init)
-        equalizer_box.append(init_eq_button)
-
-        global freqs
-        freqs = [
-            Gtk.Scale.new_with_range(Gtk.Orientation.VERTICAL, -10, 10, 0.1)
-            for _ in range(10)
-        ]
-        for scale in freqs:
-            scale.set_value(0)
-            scale.set_inverted(True)
-            equalizer_box.append(scale)
-
-        main_panel.append(equalizer_box)
-
-        # Current song display
-        global current_song_label
-        current_song_label = Gtk.Label(label="")
-        current_song_label.set_halign(Gtk.Align.END)
-        main_panel.append(current_song_label)
+        # Bottom Panel for Played Music
+        self.played_music_panel = PlayedMusicPanel()
 
         # Notebook with horizontal scrollbar
-        notebook_scrolled = Gtk.ScrolledWindow()
+        notebook_scrolled = Gtk.ScrolledWindow(height_request=400)
         notebook_scrolled.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.NEVER)
 
-        notebook = Gtk.Notebook(height_request=300)
+        notebook = Gtk.Notebook()
         notebook_scrolled.set_child(notebook)
         main_panel.append(notebook_scrolled)
 
@@ -108,11 +158,13 @@ class Sampler(Gtk.ApplicationWindow):
                 songs = sorted(os.listdir(subdir_path))
                 for idx, sound in enumerate(songs[:10]):
                     sound_path = os.path.join(subdir_path, sound)
-                    subdir_box.append(SamplerButton(sound_path))
+                    subdir_box.append(SamplerButton(sound_path, self.played_music_panel))
 
                 if len(songs) > 10:
                     show_more_button = Gtk.Button(label="Show More")
-                    show_more_button.connect("clicked", self.show_more, subdir_box, songs[10:], subdir_path)
+                    show_more_button.connect(
+                        "clicked", self.show_more, subdir_box, songs[10:], subdir_path
+                    )
                     subdir_box.append(show_more_button)
 
                 tab_content.append(subdir_box)
@@ -120,54 +172,28 @@ class Sampler(Gtk.ApplicationWindow):
             scrolled_tab_content.set_child(tab_content)
             notebook.append_page(scrolled_tab_content, tab_label)
 
-        # Side panel
-        side_panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
 
-        volume_label = Gtk.Label(label="Volume")
-        side_panel.append(volume_label)
-
-        global start_time, override
-        start_time = Gtk.SpinButton.new_with_range(0, 200, 0.1)
-        override = Gtk.CheckButton(label="Override Start Time")
-        side_panel.append(start_time)
-        side_panel.append(override)
-
-        volume_scale = Gtk.Scale.new_with_range(Gtk.Orientation.VERTICAL, 0, 100, 1)
-        volume_scale.set_value(75)
-        volume_scale.set_inverted(True)
-        volume_scale.connect("value-changed", self.set_volume)
-        side_panel.append(volume_scale)
-
-        main_panel.append(side_panel)
-
-    def equalizer_init(self, widget):
-        for scale in freqs:
-            scale.set_value(0)
-
-    def set_volume(self, scale):
-        volume = scale.get_value()
-        call(["amixer", "set", "Master", f"{int(volume)}%"])
+        main_panel.append(self.played_music_panel)
 
     def show_more(self, button, subdir_box, remaining_songs, subdir_path):
         button.set_visible(False)
         for sound in remaining_songs:
             sound_path = os.path.join(subdir_path, sound)
-            subdir_box.append(SamplerButton(sound_path))
+            subdir_box.append(SamplerButton(sound_path, self.played_music_panel))
 
-def on_activate(app):
 
-    # Create window
+class SamplerApp(Gtk.Application):
+    def __init__(self):
+        super().__init__(application_id="com.example.sampler")
 
-    win = Sampler(application=app )
+    def do_activate(self):
+        window = Sampler(self)
+        window.present()
 
-    win.present()
 
 def main():
-    app = Gtk.Application(application_id='com.example.App')
-    app.connect('activate', on_activate)
-
-    app.run(None)
-
+    app = SamplerApp()
+    app.run()
 
 
 if __name__ == "__main__":
